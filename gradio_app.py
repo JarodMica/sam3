@@ -468,7 +468,7 @@ def _chunk_frames(frames_dir: Path, chunk_size: int, chunks_root: Path) -> List[
     return chunk_dirs
 
 
-def _run_chunk_subprocess(chunk_dir: Path, out_dir: Path, prompt_text: str, checkpoint: str) -> Tuple[Path, int]:
+def _run_chunk_subprocess(chunk_dir: Path, out_dir: Path, prompt_text: str, checkpoint: str) -> Tuple[Path, int, str, str]:
     worker_path = Path(__file__).resolve().parent / "video_chunk_worker.py"
     cmd = [
         sys.executable,
@@ -483,7 +483,7 @@ def _run_chunk_subprocess(chunk_dir: Path, out_dir: Path, prompt_text: str, chec
         checkpoint,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    return out_dir, result.returncode
+    return out_dir, result.returncode, result.stdout, result.stderr
 
 
 def _stitch_outputs(output_root: Path, fps: float, dest_path: Path):
@@ -534,7 +534,10 @@ def run_chunked_video_processing(
     logs.append(f"Created {len(chunk_dirs)} chunk(s).")
 
     prompt_text = (text_prompt or "").strip()
-    checkpoint = "models/models--facebook--sam3/snapshots/3c879f39826c281e95690f02c7821c4de09afae7/sam3.pt"
+    checkpoint = str(
+        Path(__file__).resolve().parent
+        / "models/models--facebook--sam3/snapshots/3c879f39826c281e95690f02c7821c4de09afae7/sam3.pt"
+    )
     max_workers = max(1, min(parallel_chunks, len(chunk_dirs)))
     logs.append(f"Running up to {max_workers} chunk worker(s) in parallel...")
 
@@ -544,9 +547,13 @@ def run_chunked_video_processing(
             out_dir = outputs_root / chunk_dir.name
             futures.append(ex.submit(_run_chunk_subprocess, chunk_dir, out_dir, prompt_text, checkpoint))
         for f in as_completed(futures):
-            out_dir, returncode = f.result()
+            out_dir, returncode, stdout, stderr = f.result()
             if returncode != 0:
-                raise gr.Error(f"Chunk {out_dir.name} failed (return code {returncode}). Check logs.")
+                err_snip = (stderr or stdout or "").strip().splitlines()[-5:]
+                raise gr.Error(
+                    f"Chunk {out_dir.name} failed (return code {returncode}). "
+                    f"Stderr tail:\n" + "\n".join(err_snip)
+                )
 
     fps = fps_override if fps_override and fps_override > 0 else video_state.get("fps", 10.0)
     final_path = job_dir / "masked_video.mp4"
